@@ -24,13 +24,16 @@ if ($Config['interval_time'] !== 0) {
     }
 }
 
-// 过渡到新的 md5 密码并生成 live_token（如果不存在或为空）
-if (!preg_match('/^[a-f0-9]{32}$/i', $Config['manage_password']) || empty($Config['live_token'])) {
+// 过渡到新的 md5 密码并生成默认 token、user_agent （如果不存在或为空）
+if (!preg_match('/^[a-f0-9]{32}$/i', $Config['manage_password']) || empty($Config['token']) || empty($Config['user_agent'])) {
     if (!preg_match('/^[a-f0-9]{32}$/i', $Config['manage_password'])) {
         $Config['manage_password'] = md5($Config['manage_password']);
     }
-    if (empty($Config['live_token'])) {
-        $Config['live_token'] = substr(bin2hex(random_bytes(5)), 0, 10);  // 生成 10 位随机字符串
+    if (empty($Config['token'])) {
+        $Config['token'] = substr(bin2hex(random_bytes(5)), 0, 10);  // 生成 10 位随机字符串
+    }
+    if (empty($Config['user_agent'])) {
+        $Config['user_agent'] = substr(bin2hex(random_bytes(5)), 0, 10);  // 生成 10 位随机字符串
     }
     file_put_contents($configPath, json_encode($Config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
@@ -101,7 +104,6 @@ function updateConfigFields() {
         return preg_replace('/^#\s*(\S+)(\s*#.*)?$/', '# $1$2', trim(str_replace(["，", "："], [",", ":"], $url)));
     }, explode("\n", $xml_urls)));
     
-    $cache_time *= 3600;
     $interval_time = $interval_hour * 3600 + $interval_minute * 60;
     $mysql = ["host" => $mysql_host, "dbname" => $mysql_dbname, "username" => $mysql_username, "password" => $mysql_password];
 
@@ -137,13 +139,6 @@ function updateConfigFields() {
         }
     }
 
-    // 检查 Memcache 有效性
-    $memcached_set = true;
-    if (!empty($Config['cache_time']) && (!class_exists('Memcached') || !(new Memcached())->addServer('localhost', 11211))) {
-        $Config['cache_time'] = 0;
-        $memcached_set = false;
-    }
-
     // 检查 MySQL 有效性
     $db_type_set = true;
     if ($Config['db_type'] === 'mysql') {
@@ -165,7 +160,7 @@ function updateConfigFields() {
         exec('php cron.php > /dev/null 2>/dev/null &');
     }
 
-    return ['memcached_set' => $memcached_set, 'db_type_set' => $db_type_set];
+    return ['db_type_set' => $db_type_set];
 }
 
 // 处理服务器请求
@@ -180,7 +175,7 @@ try {
             'get_update_logs', 'get_cron_logs', 'get_channel', 'get_epg_by_channel',
             'get_icon', 'get_channel_bind_epg', 'get_channel_match', 'get_gen_list',
             'get_live_data', 'parse_source_info', 'toggle_status', 
-            'download_data', 'delete_unused_icons', 'delete_unused_source',
+            'download_data', 'delete_unused_icons', 'delete_unused_live_data',
             'get_version_log'
         ];
         $action = key(array_intersect_key($_GET, array_flip($action_map))) ?: '';
@@ -225,7 +220,7 @@ try {
 
             case 'get_epg_by_channel':
                 // 查询
-                $channel = urldecode($_GET['channel']);
+                $channel = $_GET['channel'];
                 $date = urldecode($_GET['date']);
                 $stmt = $db->prepare("SELECT epg_diyp FROM epg_data WHERE channel = :channel AND date = :date");
                 $stmt->execute([':channel' => $channel, ':date' => $date]);
@@ -286,8 +281,8 @@ try {
                         'channels' => $channelBindEpg[$cleanEpgSrc] ?? ''
                     ];
                 }, array_filter($xmlUrls, function($epgSrc) {
-                    // 去除空行和包含 "tvmao" 的行
-                    return !empty(ltrim($epgSrc, '# ')) && strpos($epgSrc, 'tvmao') === false;
+                    // 去除空行和包含 tvmao、cntv 的行
+                    return !empty(ltrim($epgSrc, '# ')) && strpos($epgSrc, 'tvmao') === false && strpos($epgSrc, 'cntv') === false;
                 }));
                 $dbResponse = array_merge(
                     array_filter($dbResponse, function($item) { return strpos($item['epg_src'], '【已停用】') === false; }),
@@ -350,32 +345,33 @@ try {
                 // 读取 source.txt 文件内容
                 $sourceFilePath = $liveDir . 'source.txt';
                 $sourceContent = file_exists($sourceFilePath) ? file_get_contents($sourceFilePath) : '';
+
+                // 读取 template.txt 文件内容
+                $templateFilePath = $liveDir . 'template.txt';
+                $templateContent = file_exists($templateFilePath) ? file_get_contents($templateFilePath) : '';
+
                 // 读取 channels.csv 文件内容
-                $csvFilePath = $liveDir . 'channels.csv';
+                $channelsFilePath = $liveDir . 'channels.csv';
                 $channelsData = [];
-                if (file_exists($csvFilePath)) {
-                    $csvFile = fopen($csvFilePath, 'r');
-                    $header = fgetcsv($csvFile); // 跳过表头
-                    while (($row = fgetcsv($csvFile)) !== false) {
-                        $channelsData[] = [
-                            'group' => $row[0] ?? '',
-                            'name' => $row[1] ?? '',
-                            'url' => $row[2] ?? '',
-                            'logo' => $row[3] ?? '',
-                            'tvg_id' => $row[4] ?? '',
-                            'tvg_name' => $row[5] ?? '',
-                        ];
+                if (file_exists($channelsFilePath)) {
+                    $channelsFile = fopen($channelsFilePath, 'r');
+                    $header = fgetcsv($channelsFile); // 读取表头
+                    while (($row = fgetcsv($channelsFile)) !== false) {
+                        if (empty(array_filter($row))) continue; // 跳过空行
+                        if (count($row) !== count($header)) break; // 如果字段数量不一致，跳出循环
+                        $channelsData[] = array_combine($header, $row); // 动态关联表头与行数据
                     }
-                    fclose($csvFile);
+                    fclose($channelsFile);
                 }
-                $dbResponse = ['source_content' => $sourceContent, 'channels' => $channelsData,];
+                
+                $dbResponse = ['source_content' => $sourceContent, 'template_content' => $templateContent, 'channels' => $channelsData,];
                 break;
 
             case 'parse_source_info':
                 // 解析直播源
-                $errorLog = doParseSourceInfo();
-                if ($errorLog) {
-                    $dbResponse = ['success' => 'part', 'message' => $errorLog];
+                $parseResult = doParseSourceInfo();
+                if ($parseResult !== true) {
+                    $dbResponse = ['success' => 'part', 'message' => $parseResult];
                 } else {
                     $dbResponse = ['success' => 'full'];
                 }
@@ -428,29 +424,67 @@ try {
                 $dbResponse = ['success' => true, 'message' => "共清理了 $deletedCount 个台标"];
                 break;
 
-            case 'delete_unused_source':
-                // 清理未在使用的直播源
+            case 'delete_unused_live_data':
+                // 清理未在使用的直播源缓存、未出现在频道列表中的修改记录
                 $sourceFilePath = $liveDir . 'source.txt';
                 $sourceContent = file_exists($sourceFilePath) ? file_get_contents($sourceFilePath) : '';
                 $urls = array_map('trim', explode("\n", $sourceContent));
 
                 // 遍历 live/file 目录，删除未使用的文件
                 $parentRltPath = '/' . basename(__DIR__) . '/data/live/file/'; // 相对路径
-                $deletedCount = 0;
+                $deletedFileCount = 0;
                 foreach (scandir($liveFileDir) as $file) {
                     if ($file === '.' || $file === '..') continue;
                     $fileRltPath = $parentRltPath . $file;
                     if (!array_filter($urls, function($url) use ($fileRltPath) {
                         $url = trim(explode('#', ltrim($url, '# '))[0]); // 处理注释
                         $urlmd5 = md5(urlencode($url)); // 计算 md5
-                        return stripos($fileRltPath, $url) !== false || stripos($fileRltPath, $urlmd5) !== false;
+                        return $url && (stripos($fileRltPath, $url) !== false || stripos($fileRltPath, $urlmd5) !== false);
                     })) {
                         if (@unlink($liveFileDir . $file)) { // 如果没有匹配的 URL，删除文件
-                            $deletedCount++;
+                            $deletedFileCount++;
                         }
                     }
                 }
-                $dbResponse = ['success' => true, 'message' => "共清理了 $deletedCount 个文件"];
+
+                // 删除 modifications.csv 未在 channels.csv 中出现的条目
+                $channelsFilePath = $liveDir . 'channels.csv';
+                $modificationsFilePath = $liveDir . 'modifications.csv';
+                
+                $deletedRecordCount = 0;
+                if (file_exists($channelsFilePath) && file_exists($modificationsFilePath)) {
+                    // 读取 channels.csv 中的 tag 字段
+                    $channelTags = [];
+                    $file = fopen($channelsFilePath, 'r');
+                    $header = fgetcsv($file);
+                    while (($row = fgetcsv($file)) !== false) {
+                        $channelTags[] = $row[array_search('tag', $header)];
+                    }
+                    fclose($file);
+                
+                    // 过滤 modifications.csv 数据并统计移除行数
+                    $file = fopen($modificationsFilePath, 'r');
+                    $modificationsHeader = fgetcsv($file);
+                    $filteredData = [];
+                    while (($row = fgetcsv($file)) !== false) {
+                        if (in_array($row[array_search('tag', $modificationsHeader)], $channelTags)) {
+                            $filteredData[] = $row;
+                        } else {
+                            $deletedRecordCount++;
+                        }
+                    }
+                    fclose($file);
+                
+                    // 写回过滤后的数据
+                    $file = fopen($modificationsFilePath, 'w');
+                    fputcsv($file, $modificationsHeader);
+                    foreach ($filteredData as $row) {
+                        fputcsv($file, $row);
+                    }
+                    fclose($file);
+                }
+                
+                $dbResponse = ['success' => true, 'message' => "共清理了 $deletedFileCount 个缓存文件， $deletedRecordCount 条修改记录。"];
                 break;
 
             case 'get_version_log':
@@ -514,8 +548,9 @@ try {
             'upload_icon' => isset($_FILES['iconFile']),
             'update_icon_list' => isset($_POST['update_icon_list']),
             'upload_source_file' => isset($_FILES['liveSourceFile']),
-            'save_source_url' => isset($_POST['save_source_url']),
+            'save_content_to_file' => isset($_POST['save_content_to_file']),
             'save_source_info' => isset($_POST['save_source_info']),
+            'update_config_field' => isset($_POST['update_config_field']),
         ];
 
         // 确定操作类型
@@ -527,15 +562,13 @@ try {
         switch ($action) {
             case 'update_config':
                 // 更新配置
-                ['memcached_set' => $memcached_set, 'db_type_set' => $db_type_set] = updateConfigFields();
+                ['db_type_set' => $db_type_set] = updateConfigFields();
                 echo json_encode([
-                    'memcached_set' => $memcached_set,
                     'db_type_set' => $db_type_set,
                     'interval_time' => $Config['interval_time'],
                     'start_time' => $Config['start_time'],
                     'end_time' => $Config['end_time']
                 ]);
-
                 exit;
 
             case 'set_gen_list':
@@ -665,39 +698,54 @@ try {
                 }
                 exit;
 
-            case 'save_source_url':
-                // 保存直播源地址
-                $sourceFilePath = $liveDir . 'source.txt';
+            case 'save_content_to_file':
+                // 保存内容到文件
+                $filePath = __DIR__ . $_POST['file_path'] ?? '';
                 $content = $_POST['content'] ?? '';
-                if (file_put_contents($sourceFilePath, $content) !== false) {
-                    echo '内容已成功保存到 source.txt';
+                if (file_put_contents($filePath, str_replace("，", ",", $content)) !== false) {
+                    echo json_encode(['success' => true]);
                 } else {
                     http_response_code(500);
-                    echo '保存失败';
+                    echo json_encode(['success' => false]);
                 }
                 exit;
                 
             case 'save_source_info':
+                // 更新配置文件
+                $Config['live_tvg_logo_enable'] = (int)$_POST['live_tvg_logo_enable'];
+                $Config['live_tvg_id_enable'] = (int)$_POST['live_tvg_id_enable'];
+                $Config['live_tvg_name_enable'] = (int)$_POST['live_tvg_name_enable'];
+            
+                if (file_put_contents($configPath, json_encode($Config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) === false) {
+                    http_response_code(500);
+                    echo json_encode(['success' => false, 'message' => '保存配置文件失败']);
+                    exit;
+                }
+            
                 // 保存直播源信息
                 $content = json_decode($_POST['content'], true);
-                if (!$content) {
+                if (empty($content)) {
                     echo json_encode(['success' => false, 'message' => '无效的数据']);
                     exit;
                 }
-                $filePath = $liveDir . 'channels.csv';            
-                if (($file = fopen($filePath, 'w')) !== false) {
-                    fputcsv($file, ['分组', '频道名', '直播地址', '台标地址', 'tvg-id', 'tvg-name']);
-                    foreach ($content as $row) {
-                        fputcsv($file, array_values($row));
-                    }
-                    fclose($file);
+            
+                generateLiveFiles($content, 'tv'); // 重新生成 M3U 和 TXT 文件
+                echo json_encode(['success' => true]);
+                exit;
 
-                    // 重新生成 M3U 和 TXT 文件
-                    generateLiveFiles($liveDir . 'channels.csv', $liveDir);
-                    
-                    echo json_encode(['success' => true]);
+            case 'update_config_field':
+                // 更新单个字段
+                foreach ($_POST as $key => $value) {
+                    // 排除 update_config_field 字段
+                    if ($key !== 'update_config_field') {
+                        $Config[$key] = is_numeric($value) ? intval($value) : $value;
+                    }
+                }
+                if (file_put_contents($configPath, json_encode($Config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) !== false) {
+                    echo json_encode(['success' => $Config]);
                 } else {
-                    echo json_encode(['success' => false, 'message' => '无法打开文件']);
+                    http_response_code(500);
+                    echo '保存失败';
                 }
                 exit;
         }

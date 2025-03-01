@@ -1,8 +1,3 @@
-> [!IMPORTANT]  
-> **访问路径**从 `http://{服务器IP地址}:5678/epg/` 修改为 `http://{服务器IP地址}:5678/`（兼容旧路径）
-> 
-> **映射路径**从 `-v ./data:/htdocs/epg/data` 修改为 `-v ./data:/htdocs/data`
-
 ![EPG-Server](https://socialify.git.ci/taksssss/EPG-Server/image?description=1&descriptionEditable=Docker%F0%9F%90%B3%E9%83%A8%E7%BD%B2%EF%BC%8C%E5%B8%A6%E8%AE%BE%E7%BD%AE%E7%95%8C%E9%9D%A2%E3%80%81%E5%8F%B0%E6%A0%87%E7%AE%A1%E7%90%86%EF%BC%8C%E6%94%AF%E6%8C%81DIYP%E3%80%81%E8%B6%85%E7%BA%A7%E7%9B%B4%E6%92%AD%E5%8F%8Axmltv%E3%80%82&font=Inter&forks=1&issues=1&language=1&owner=1&pattern=Circuit%20Board&pulls=1&stargazers=1&theme=Auto)
 
 # 📺 EPG-Server
@@ -12,7 +7,7 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
 
 ## 💻 主要功能
 
-📡 **多种直播格式**：支持返回 DIYP & 百川、超级直播以及 xmltv 格式文件。
+📡 **多直播格式**：支持返回 DIYP & 百川、超级直播以及 xmltv 格式文件。
   
 🐳 **多架构支持**：提供适用于 amd64、arm64 和 armv7 架构的 Docker 镜像，兼容电视盒子等设备使用。
 
@@ -20,9 +15,13 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
 
 🗃️ **数据库管理**：采用先构建后存数据库的策略，减少冗余、提升读取速度。支持 SQLite 和 MySQL 数据库，内置 phpLiteAdmin 管理工具。
 
-⏱️ **缓存支持**：集成 Memcached，可自定义缓存时间。
-
 🖼️ **台标管理**：支持台标模糊匹配，便于匹配台标资源。
+
+➰ **直播源管理**：支持聚合 TXT/M3U 直播源，并定时更新。
+
+🔒 **访问权限控制**：支持设置 TOKEN ，限制访问 EPG 服务及直播源。
+
+⏱️ **缓存支持**：集成 Memcached，可自定义缓存时间。
 
 🔄 **频道匹配**：支持繁体中文频道匹配，可进行双向模糊匹配；支持频道别名（可使用正则表达式）和指定 EPG 源。
 
@@ -30,23 +29,40 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
 
 📝 **节目单生成**：支持生成指定频道节目单并匹配 M3U 的 xmltv 格式文件。
 
-➰ **直播源管理**：支持聚合 TXT/M3U 直播源，并定时更新。
-
-🗂️ **兼容多种格式**：支持不同格式的 XMLTV 文件。
+🗂️ **兼容多种格式**：支持不同标准格式的 XMLTV 文件。
 
 🛠️ **文件管理**：集成 tinyfilemanager 以便于文件管理。
 
 🌐 **界面设置**：包含简单易用的网页设置页面，便于操作和管理。
 
 > [!TIP]
-> `xmltv` 用户搭配 [【一键生成】匹配 M3U 文件的 XML 节目单](https://www.right.com.cn/forum/thread-8392662-1-1.html) 使用。
+> ⚠️ 使用前请仔细阅读「管理页面」底部的`「使用说明」`
+> 
+> 原贴：[【Docker | 台标管理 | 直播源管理】自建DIYP、超级直播EPG节目单服务](https://www.right.com.cn/forum/thread-8386320-1-1.html)
+> 
+> `xmltv` 用户使用方法：[【一键生成】匹配 M3U 文件的 XML 节目单](https://www.right.com.cn/forum/thread-8392662-1-1.html) 
+>
+> `直播源管理` 使用方法：[【EPG-Server】直播源管理使用说明](https://www.right.com.cn/forum/thread-8417162-1-1.html) 
 
-![设置页面](/pic/management.png)
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="/pic/management-dark.png"
+  />
+  <source
+    media="(prefers-color-scheme: light)"
+    srcset="/pic/management.png"
+  />
+  <img
+    alt="设置页面"
+    src="/pic/management.png"
+  />
+</picture>
 
 > **内置正则表达式说明：**
 > - 包含 `regex:`
 > - 示例：
->   - `CCTV$1 => regex:/^CCTV[-\s]*(\d+(\s*P(LUS)?|[K\+])?)(?![\s-]*(美洲|欧洲)).*/i` ：将 `CCTV 1综合`、`CCTV-4K频道`、`CCTV - 5+频道`、`CCTV - 5PLUS频道` 等替换成 `CCTV1`、`CCTV4K`、`CCTV5+`、`CCTV5PLUS`（排除 `CCTV4美洲` 和 `CCTV4欧洲`）
+>   - `CCTV$1 => regex:/^CCTV[-\s]*(\d{1,2}(\s*P(LUS)?|[K\+])?)(?![\s-]*(美洲|欧洲)).*/i` ：将 `CCTV 1综合`、`CCTV-4K频道`、`CCTV - 5+频道`、`CCTV - 5PLUS频道` 等替换成 `CCTV1`、`CCTV4K`、`CCTV5+`、`CCTV5PLUS`（排除 `CCTV4美洲` 和 `CCTV4欧洲`）
 
 ## 📝 更新日志
 
@@ -85,9 +101,11 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
      taksss/php-epg:latest
    ```
 
-   > 默认端口为 `5678` ，根据需要自行修改（注意端口占用）
-   > 
-   > 无法正常拉取镜像的，可使用同步更新的 `腾讯云容器镜像`（`ccr.ccs.tencentyun.com/taksss/php-epg:latest`）
+    > 默认端口为 `5678` ，根据需要自行修改（注意端口占用）
+    > 
+    > 可选参数：`-e PHP_MEMORY_LIMIT=512M` ，设置 PHP 内存限制，默认 `512M`
+    > 
+    > 无法正常拉取镜像的，可使用同步更新的 `腾讯云容器镜像`（`ccr.ccs.tencentyun.com/taksss/php-epg:latest`）
 
 <details>
 
@@ -103,7 +121,7 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
       taksss/php-epg:latest
     ```
 
- </details>
+</details>
 
 <details>
 
@@ -143,7 +161,7 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
       taksss/php-epg:latest
     ```
  
-  </details>
+</details>
 
 ## 🛠️ 使用步骤
 
@@ -173,8 +191,39 @@ PHP 实现的 EPG（电子节目指南）服务端， `Docker` 部署，自带�
 > - `Ctrl + S`：保存设置
 > - `Ctrl + /`：对选中 EPG 地址设置（取消）注释
 
+## ☕ Buy Me a Coffee
+
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="/pic/buymeacofee-dark.png"
+  />
+  <source
+    media="(prefers-color-scheme: light)"
+    srcset="/pic/buymeacofee.png"
+  />
+  <img
+    alt="Buy Me a Coffee"
+    src="/pic/buymeacofee.png"
+  />
+</picture>
+
 ## ⭐ Star History
-[![Star History Chart](https://api.star-history.com/svg?repos=taksssss/EPG-Server&type=Date)](https://star-history.com/#taksssss/EPG-Server&Date)
+
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="https://api.star-history.com/svg?repos=taksssss/EPG-Server&type=Date&theme=dark"
+  />
+  <source
+    media="(prefers-color-scheme: light)"
+    srcset="https://api.star-history.com/svg?repos=taksssss/EPG-Server&type=Date"
+  />
+  <img
+    alt="Star History Chart"
+    src="https://api.star-history.com/svg?repos=taksssss/EPG-Server&type=Date"
+  />
+</picture>
 
 ## 👍 特别鸣谢
 - [ChatGPT](https://chatgpt.com/)

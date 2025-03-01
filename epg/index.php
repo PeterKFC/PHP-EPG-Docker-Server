@@ -13,6 +13,38 @@
 // 引入公共脚本
 require_once 'public.php';
 
+// 获取当前完整的 URL
+$requestUrl = $_SERVER['REQUEST_URI'];
+
+// 修正 URL 格式：如果存在多个 `?`，将后续的 `?` 替换为 `&`
+if (substr_count($requestUrl, '?') > 1) {
+    $requestUrl = preg_replace('/&/', '?', preg_replace('/\?/', '&', $requestUrl), 1);
+}
+
+// 解析 URL 中的查询参数
+parse_str(str_replace('+', '%2B', parse_url($requestUrl, PHP_URL_QUERY)), $query_params);
+
+// 获取 URL 中的 token 参数并验证
+$tokenRange = $Config['token_range'] ?? 1;
+$token = $query_params['token'] ?? '';
+$live = $query_params['live'] ?? '';
+if ($tokenRange !== 0 && $token !== $Config['token'] && 
+    (($tokenRange !== 2 && $live) || ($tokenRange !== 1 && !$live))) {
+    http_response_code(403);
+    echo '访问被拒绝：无效的 Token。';
+    exit;
+}
+
+// 获取请求的 User-Agent 并验证
+$userAgentRange = $Config['user_agent_range'] ?? 0;
+$userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+if ($userAgentRange !== 0 && $userAgent !== $Config['user_agent'] && 
+    (($userAgentRange !== 2 && $live) || ($userAgentRange !== 1 && !$live))) {
+    http_response_code(403);
+    echo '访问被拒绝：无效的 User-Agent。';
+    exit;
+}
+
 // 禁止输出错误提示
 error_reporting(0);
 
@@ -53,15 +85,11 @@ function getFormatTime($time) {
 
 // 从数据库读取 diyp、lovetv 数据，兼容未安装 memcached 的情况
 function readEPGData($date, $oriChannelName, $cleanChannelName, $db, $type) {
-    global $Config;
-    global $iconList;
+    // 默认缓存 24 小时，更新数据时清空
+    $cache_time = 24 * 3600;
 
-    // 如果传入的日期小于当前日期，设置 cache_time 为 7 天
-    $cache_time = ($date < date('Y-m-d')) ? 7 * 24 * 3600 : $Config['cache_time'];
-
-    // 检查是否开启缓存并安装了 Memcached 类
-    $memcached_enabled = $Config['cache_time'] && class_exists('Memcached')
-        && ($memcached = new Memcached())->addServer('localhost', 11211);
+    // 检查 Memcached 状态
+    $memcached_enabled = class_exists('Memcached') && ($memcached = new Memcached())->addServer('localhost', 11211);
     $cache_key = base64_encode("{$date}_{$cleanChannelName}_{$type}");
 
     if ($memcached_enabled) {
@@ -82,15 +110,12 @@ function readEPGData($date, $oriChannelName, $cleanChannelName, $db, $type) {
         SELECT epg_diyp
         FROM epg_data
         WHERE (
-            channel = :channel
+            (channel = :channel
             OR channel LIKE :like_channel
-            OR :channel LIKE $concat
+            OR :channel LIKE $concat)
+            AND date = :date
         )
         ORDER BY
-            CASE
-                WHEN date = :date THEN 1
-                ELSE 2
-            END,
             CASE
                 WHEN channel = :channel THEN 1
                 WHEN channel LIKE :like_channel THEN 2
@@ -194,50 +219,43 @@ function findCurrentProgramme($programmes) {
 function liveFetchHandler($query_params) {
     global $Config, $liveDir, $serverUrl, $liveFileDir;
 
-    if ($query_params['token'] === $Config['live_token']) {
-        header('Content-Type: text/plain');
+    header('Content-Type: text/plain');
 
-        // 如果存在 'url' 参数
-        if (!empty($query_params['url'])) {
-            $url = $query_params['url'];
-            $filePath = (stripos($url, '/data/live/file/') !== false) 
-                ? $liveFileDir . basename($url)
-                : $liveFileDir . '/' . md5(urlencode($url)) . '.txt';
-
-            echo file_exists($filePath) ? file_get_contents($filePath) : "文件不存在";
-            exit;
+    // 计算文件路径
+    $isValidFile = false;
+    if (!empty($query_params['url'])) {
+        $url = $query_params['url'];
+        $filePath = sprintf('%s/%s.%s', $liveFileDir, md5(urlencode($url)), $query_params['live']);
+        if (($query_params['latest'] === '1' && doParseSourceInfo($url)) === true || 
+            file_exists($filePath) || doParseSourceInfo($url) === true) { // 判断是否需要获取最新文件
+            $isValidFile = true;
         }
-
-        // 处理 'live' 参数
-        $filePath = $liveDir . (($query_params['live'] === 'txt') ? 'tv.txt' : ($query_params['live'] === 'm3u' ? 'tv.m3u' : ''));
-
-        if (file_exists($filePath)) {
-            $content = file_get_contents($filePath);
-            $tvgUrl = $serverUrl . ($query_params['live'] === 'm3u' ? '/t.xml.gz' : '/');
-            if ($query_params['live'] === 'm3u') {
-                $content = preg_replace('/(#EXTM3U x-tvg-url=")(.*?)(")/', '$1' . $tvgUrl . '$3', $content, 1);
-            } elseif ($query_params['live'] === 'txt') {
-                $content = preg_replace('/#genre#/', '#genre#,' . $tvgUrl, $content, 1);
-            }
-            echo $content;
-        } else {
-            echo "文件不存在或无效的 live 类型";
-        }        
     } else {
-        echo "无效的 token";
+        $filePath = $liveDir . ($query_params['live'] === 'txt' ? 'tv.txt' : ($query_params['live'] === 'm3u' ? 'tv.m3u' : ''));
+        $isValidFile = file_exists($filePath);
     }
+
+    // 如果文件存在或成功解析了源数据
+    if ($isValidFile) {
+        $content = file_get_contents($filePath);
+    } else {
+        echo "文件不存在或无效的 live 类型";
+        exit;
+    }
+
+    // 处理 TVG URL 替换
+    $tvgUrl = $serverUrl . ($query_params['live'] === 'm3u' ? '/t.xml.gz' : '/');
+    if ($query_params['live'] === 'm3u') {
+        $content = preg_replace('/(#EXTM3U x-tvg-url=")(.*?)(")/', '$1' . $tvgUrl . '$3', $content, 1);
+    }
+
+    echo $content;
     exit;
 }
 
 // 处理请求
-function fetchHandler() {
+function fetchHandler($query_params) {
     global $init, $db, $Config;
-
-    $uri = parse_url($_SERVER['REQUEST_URI']);
-    $query_params = [];
-    if (isset($uri['query'])) {
-        parse_str($uri['query'], $query_params);
-    }
 
     // 处理直播源请求    
     if (isset($query_params['live'])) {
@@ -250,7 +268,7 @@ function fetchHandler() {
 
     $date = isset($query_params['date']) ? getFormatTime(preg_replace('/\D+/', '', $query_params['date']))['date'] : getNowDate();
 
-    // 频道参数为空时，直接重定向到 t.xml 文件
+    // 频道参数为空时，直接返回 t.xml 文件数据
     if (empty($cleanChannelName)) {
         if ($Config['gen_xml'] === 1) {
             header('Content-Type: application/xml');
@@ -266,34 +284,18 @@ function fetchHandler() {
 
     // 返回 diyp、lovetv 数据
     if (isset($query_params['ch']) || isset($query_params['channel'])) {
-        function processResponse($response, $oriChannelName, $date, $type, $init) {
-            $responseData = json_decode($response, true);
-            $resDate = ($type === 'diyp') ? $responseData['date'] : date('Y-m-d', $responseData[$oriChannelName]['program'][0]['st']);
-            if ($resDate === $date) {
-                makeRes($response, $init['status'], $init['headers']);
-                exit;
-            }
-            return false;
-        }
-
         $type = isset($query_params['ch']) ? 'diyp' : 'lovetv';
         $response = readEPGData($date, $oriChannelName, $cleanChannelName, $db, $type);
-
-        // 频道在列表中但无当天数据，尝试通过 tvmao 接口获取数据
-        $retry = $response && !processResponse($response, $oriChannelName, $date, $type, $init);
-        if ($retry && $Config['tvmao_default'] === 1 && $date >= date('Y-m-d')) {
-            $matchChannelName = json_decode($response, true)['channel_name'] ?? $oriChannelName;
-            $json_url = "https://sp0.baidu.com/8aQDcjqpAAV3otqbppnN2DJv/api.php?query=$matchChannelName&resource_id=12520&format=json";
-            downloadJSONData($json_url, $db, $log_messages, $matchChannelName, $replaceFlag = false); // 只更新无数据的日期
-            $newResponse = readEPGData($date, $oriChannelName, $matchChannelName, $db, $type);
-            processResponse($newResponse, $oriChannelName, $date, $type, $init);
+        if ($response) {
+            makeRes($response, $init['status'], $init['headers']);
+            exit;
         }
 
-        // 返回默认数据
+        // 无法获取到数据时返回默认数据
         $ret_default = !isset($Config['ret_default']) || $Config['ret_default'];
         $iconUrl = iconUrlMatch($cleanChannelName) ?? iconUrlMatch($oriChannelName);
         if ($type === 'diyp') {
-            // 无法获取到数据时返回默认 diyp 数据
+            // 返回默认 diyp 数据
             $default_diyp_program_info = [
                 'channel_name' => $cleanChannelName,
                 'date' => $date,
@@ -310,7 +312,7 @@ function fetchHandler() {
             ];
             $response = json_encode($default_diyp_program_info, JSON_UNESCAPED_UNICODE);
         } else {
-            // 无法获取到数据时返回默认 lovetv 数据
+            // 返回默认 lovetv 数据
             $default_lovetv_program_info = [
                 $cleanChannelName => [
                     'isLive' => '',
@@ -335,6 +337,6 @@ function fetchHandler() {
 }
 
 // 执行请求处理
-fetchHandler();
+fetchHandler($query_params);
 
 ?>

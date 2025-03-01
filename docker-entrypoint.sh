@@ -12,18 +12,14 @@ PHP_MEMORY_LIMIT="${PHP_MEMORY_LIMIT:-512M}"
 
 echo 'Updating configurations'
 
-# Apply configurations
+# Check if the required configuration is already present
+if ! grep -q "# Directory Listing Disabled" /etc/apache2/httpd.conf; then
 cat <<EOF >> /etc/apache2/httpd.conf
 # Directory Listing Disabled
 <Directory "/htdocs">
     Options -Indexes
     AllowOverride All
     Require all granted
-
-    # Enable mod_rewrite for compatibility
-    RewriteEngine On
-    RewriteCond %{REQUEST_URI} ^/epg/?(.*)\$ 
-    RewriteRule ^epg/?(.*)\$ /\$1 [L,R=301]
 </Directory>
 
 # Block access to /htdocs/data except for /htdocs/data/icon
@@ -35,6 +31,7 @@ cat <<EOF >> /etc/apache2/httpd.conf
     Require all granted
 </Location>
 EOF
+fi
 
 # Change Server Admin, Name, Document Root
 sed -i "s/ServerAdmin\ you@example.com/ServerAdmin\ ${SERVER_ADMIN}/" /etc/apache2/httpd.conf
@@ -44,12 +41,12 @@ sed -i 's#Directory "/var/www/localhost/htdocs"#Directory "/htdocs"#g' /etc/apac
 sed -i 's#AllowOverride None#AllowOverride All#' /etc/apache2/httpd.conf
 
 # Change TransferLog after ErrorLog
-sed -i 's#^ErrorLog .*#ErrorLog "/dev/stderr"\nTransferLog "/dev/stdout"#g' /etc/apache2/httpd.conf
-sed -i 's#CustomLog .* combined#CustomLog "/dev/stdout" combined#g' /etc/apache2/httpd.conf
+sed -i 's#^ErrorLog .*#ErrorLog "/dev/stderr"\nTransferLog "/dev/null"#g' /etc/apache2/httpd.conf
+sed -i 's#CustomLog .* combined#CustomLog "/dev/null" combined#g' /etc/apache2/httpd.conf
 
 # SSL DocumentRoot and Log locations
 sed -i 's#^ErrorLog .*#ErrorLog "/dev/stderr"#g' /etc/apache2/conf.d/ssl.conf
-sed -i 's#^TransferLog .*#TransferLog "/dev/stdout"#g' /etc/apache2/conf.d/ssl.conf
+sed -i 's#^TransferLog .*#TransferLog "/dev/null"#g' /etc/apache2/conf.d/ssl.conf
 sed -i 's#^DocumentRoot ".*#DocumentRoot "/htdocs"#g' /etc/apache2/conf.d/ssl.conf
 sed -i "s/ServerAdmin\ you@example.com/ServerAdmin\ ${SERVER_ADMIN}/" /etc/apache2/conf.d/ssl.conf
 sed -i "s/ServerName\ www.example.com:443/ServerName\ ${HTTPS_SERVER_NAME}/" /etc/apache2/conf.d/ssl.conf
@@ -68,6 +65,10 @@ sed -i "s#^;date.timezone =\$#date.timezone = \"${TZ}\"#" /etc/php83/php.ini
 sed -i "s/upload_max_filesize = .*/upload_max_filesize = 100M/" /etc/php83/php.ini
 sed -i "s/post_max_size = .*/post_max_size = 100M/" /etc/php83/php.ini
 
+# Modify system timezone
+if [ -e /etc/localtime ]; then rm -f /etc/localtime; fi
+ln -s /usr/share/zoneinfo/${TZ} /etc/localtime
+
 echo 'Running cron.php and Apache'
 
 # Change ownership of /htdocs/
@@ -76,6 +77,12 @@ chown -R apache:apache /htdocs/
 # Start cron.php
 cd /htdocs/
 su -s /bin/sh -c "php cron.php &" "apache"
+
+# Remove stale PID file
+if [ -f /run/apache2/httpd.pid ]; then
+    echo "Removing stale httpd PID file"
+    rm -f /run/apache2/httpd.pid
+fi
 
 # Start Memcached and Apache
 memcached -u nobody -d && httpd -D FOREGROUND
